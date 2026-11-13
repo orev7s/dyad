@@ -26,7 +26,7 @@ import {
   getFallbackChatIdAfterClose,
   groupChatIdsByApp,
   partitionChatsByVisibleCount,
-  reorderVisibleChatIds,
+  moveChatIdToIndex,
   restoreLocalStorageSnapshot,
   restoreMessagesScrollTop,
   restoreOrderedIdAfterRollback,
@@ -341,10 +341,37 @@ describe("ChatTabs helpers", () => {
     expect(nextIds).toEqual([1, 4, 2, 3]);
   });
 
-  it("reorders only visible tabs during drag", () => {
+  it("reorders visible tabs by moving the dragged tab to the drop index", () => {
     const orderedIds = [10, 11, 12, 13, 14];
-    const nextIds = reorderVisibleChatIds(orderedIds, 3, 12, 10);
-    expect(nextIds).toEqual([12, 10, 11, 13, 14]);
+    expect(moveChatIdToIndex(orderedIds, 12, 0)).toEqual([12, 10, 11, 13, 14]);
+    expect(moveChatIdToIndex(orderedIds, 10, 2)).toEqual([11, 12, 10, 13, 14]);
+  });
+
+  it("pulls an overflow tab onto the visible strip", () => {
+    // 13 starts in overflow (3 visible tabs). Dropping it on the first visible
+    // slot makes it visible and pushes the previous last visible tab out.
+    const orderedIds = [10, 11, 12, 13, 14];
+    const nextIds = moveChatIdToIndex(orderedIds, 13, 0);
+    expect(nextIds).toEqual([13, 10, 11, 12, 14]);
+    expect(nextIds.slice(0, 3)).toEqual([13, 10, 11]);
+  });
+
+  it("pushes a visible tab into the first overflow slot", () => {
+    const orderedIds = [10, 11, 12, 13, 14];
+    const visibleTabCount = 3;
+    const nextIds = moveChatIdToIndex(orderedIds, 10, visibleTabCount);
+    expect(nextIds).toEqual([11, 12, 13, 10, 14]);
+    expect(nextIds.slice(0, visibleTabCount)).toEqual([11, 12, 13]);
+  });
+
+  it("appends a tab when the drop index is past the end", () => {
+    expect(moveChatIdToIndex([10, 11, 12], 10, 3)).toEqual([11, 12, 10]);
+  });
+
+  it("leaves the order untouched for unknown or unmoved sources", () => {
+    const orderedIds = [10, 11, 12];
+    expect(moveChatIdToIndex(orderedIds, 99, 0)).toBe(orderedIds);
+    expect(moveChatIdToIndex(orderedIds, 11, 1)).toBe(orderedIds);
   });
 
   it("partitions chats into visible and overflow sets", () => {

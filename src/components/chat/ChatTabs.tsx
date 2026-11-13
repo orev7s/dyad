@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type DragEvent,
 } from "react";
 import { useAtomValue, useSetAtom, useStore } from "jotai";
 import { Loader2, MoreHorizontal, X } from "lucide-react";
@@ -323,25 +324,35 @@ export function applySelectionToOrderedChatIds(
   return nextIds;
 }
 
-export function reorderVisibleChatIds(
+/**
+ * Moves a chat tab to `targetIndex` in the ordered tab list.
+ *
+ * Unlike reordering only the visible strip, the source can live in the
+ * overflow dropdown, which is what lets tabs cross the visible/overflow
+ * boundary. Visible and overflow tabs share one ordered list: the first
+ * `visibleTabCount` entries are the visible strip and the rest are the
+ * dropdown. Inserting at `visibleTabCount` therefore pushes a tab into the
+ * first overflow slot, and inserting at a visible index pulls an overflow tab
+ * back onto the strip.
+ */
+export function moveChatIdToIndex(
   orderedChatIds: number[],
-  visibleTabCount: number,
   sourceChatId: number,
-  targetChatId: number,
+  targetIndex: number,
 ): number[] {
-  const visibleIds = orderedChatIds.slice(0, visibleTabCount);
-  const sourceIndex = visibleIds.indexOf(sourceChatId);
-  const targetIndex = visibleIds.indexOf(targetChatId);
+  const sourceIndex = orderedChatIds.indexOf(sourceChatId);
+  if (sourceIndex === -1) return orderedChatIds;
 
-  if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) {
-    return orderedChatIds;
-  }
+  const clampedTargetIndex = Math.max(
+    0,
+    Math.min(targetIndex, orderedChatIds.length - 1),
+  );
+  if (sourceIndex === clampedTargetIndex) return orderedChatIds;
 
-  const nextVisible = [...visibleIds];
-  const [movedId] = nextVisible.splice(sourceIndex, 1);
-  nextVisible.splice(targetIndex, 0, movedId);
-
-  return [...nextVisible, ...orderedChatIds.slice(visibleTabCount)];
+  const nextIds = [...orderedChatIds];
+  nextIds.splice(sourceIndex, 1);
+  nextIds.splice(clampedTargetIndex, 0, sourceChatId);
+  return nextIds;
 }
 
 export function shouldPrepareCrossWindowTransfer(
@@ -537,6 +548,7 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
   const [draggingChatId, setDraggingChatId] = useState<number | null>(null);
+  const [isOverflowMenuOpen, setIsOverflowMenuOpen] = useState(false);
   const [notifiedChatIds, setNotifiedChatIds] = useState<Set<number>>(
     new Set(),
   );
@@ -1506,6 +1518,42 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
     setGroupTabsByApp((prev) => !prev);
   };
 
+  // Moves the dragged tab into the first overflow slot. The dropdown trigger and
+  // its menu are both drop targets, so a tab can be dragged off the visible
+  // strip and into the "..." dropdown.
+  const moveDraggedChatToOverflow = () => {
+    const sourceChatId = draggingChatId;
+    setDraggingChatId(null);
+    setIsOverflowMenuOpen(false);
+    // The selected tab always stays on the visible strip (selecting an overflow
+    // tab promotes it), so moving it into the dropdown would be undone by the
+    // selection effect on the next render.
+    if (sourceChatId === null || sourceChatId === selectedChatId) return;
+
+    const nextIds = moveChatIdToIndex(
+      orderedChatIds,
+      sourceChatId,
+      visibleTabCount,
+    );
+    if (!isSameIdOrder(orderedChatIds, nextIds)) {
+      // A hand-arranged order wins over auto-grouping, matching visible drops.
+      setRecentViewedChatIds(nextIds);
+      setGroupTabsByApp(false);
+    }
+  };
+
+  const allowChatTabDrop = (event: DragEvent<HTMLElement>) => {
+    if (draggingChatId === null) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  };
+
+  const handleOverflowTabDrop = (event: DragEvent<HTMLElement>) => {
+    if (draggingChatId === null) return;
+    event.preventDefault();
+    moveDraggedChatToOverflow();
+  };
+
   // Check whether tabs span more than one app (used to enable/disable grouping)
   const hasMultipleApps = useMemo(() => {
     const appIds = new Set<number>();
@@ -1667,11 +1715,12 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
                               return;
                             }
 
-                            const nextIds = reorderVisibleChatIds(
+                            // The drop target's index works for both visible
+                            // tabs and tabs dragged out of the overflow menu.
+                            const nextIds = moveChatIdToIndex(
                               orderedChatIds,
-                              visibleTabs.length,
                               draggingChatId,
-                              chat.id,
+                              orderedChatIds.indexOf(chat.id),
                             );
                             if (!isSameIdOrder(orderedChatIds, nextIds)) {
                               // Persist the manual order and drop out of grouped
@@ -1680,6 +1729,10 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
                               setGroupTabsByApp(false);
                             }
                             setDraggingChatId(null);
+                            // A drop out of the overflow menu lands on the
+                            // visible strip; close the menu so it does not
+                            // cover the tab that just appeared.
+                            setIsOverflowMenuOpen(false);
                           }}
                           className={cn(
                             "no-app-region-drag group relative flex h-8 min-w-[160px] max-w-52 items-center gap-1 px-2 py-0.5",
@@ -1834,16 +1887,27 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
         </div>
 
         {overflowTabs.length > 0 && (
-          <DropdownMenu>
+          <DropdownMenu
+            open={isOverflowMenuOpen}
+            onOpenChange={setIsOverflowMenuOpen}
+          >
             <DropdownMenuTrigger
+              data-testid="chat-tab-overflow-trigger"
               className="no-app-region-drag flex h-7 w-8 items-center justify-center rounded-md border border-transparent bg-muted/50 text-muted-foreground hover:bg-muted"
               aria-label={t("openOverflowTabs", {
                 count: overflowTabs.length,
               })}
+              onDragOver={allowChatTabDrop}
+              onDrop={handleOverflowTabDrop}
             >
               <MoreHorizontal size={14} />
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-64">
+            <DropdownMenuContent
+              align="end"
+              className="w-64"
+              onDragOver={allowChatTabDrop}
+              onDrop={handleOverflowTabDrop}
+            >
               {overflowTabsForMenu.map((chat) => {
                 const title = chat.title?.trim() || t("newChat");
                 const appName =
@@ -1851,6 +1915,14 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
                 return (
                   <DropdownMenuItem
                     key={chat.id}
+                    data-testid={`chat-tab-overflow-${chat.id}`}
+                    draggable
+                    onDragStart={(event) => {
+                      event.dataTransfer.effectAllowed = "move";
+                      event.dataTransfer.setData("text/plain", String(chat.id));
+                      setDraggingChatId(chat.id);
+                    }}
+                    onDragEnd={() => setDraggingChatId(null)}
                     onClick={() => handleTabClick(chat, true)}
                     onAuxClick={(event) => {
                       if (event.button === 1) {
