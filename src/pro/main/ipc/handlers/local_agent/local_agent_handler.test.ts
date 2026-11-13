@@ -2387,6 +2387,43 @@ describe("handleLocalAgentStream", () => {
       );
     });
 
+    it("settles as cancelled when stop aborts the post-turn Supabase deploy", async () => {
+      const { event, getMessagesByChannel } = createFakeEvent();
+      const abortController = new AbortController();
+      mockSettings = buildTestSettings({ enableDyadPro: true });
+      mockChatData = buildTestChat({
+        supabaseProjectId: "supabase-project-id",
+      });
+      mockStreamResult = createFakeStream([{ type: "text-delta", text: "ok" }]);
+      vi.mocked(deployAllFunctionsIfNeeded).mockImplementationOnce(async () => {
+        abortController.abort(new Error("Stopped"));
+        return { success: false, cancelled: true };
+      });
+
+      await expect(
+        handleLocalAgentStream(
+          event,
+          { chatId: 1, prompt: "test" },
+          abortController,
+          {
+            placeholderMessageId: 10,
+            systemPrompt: "You are helpful",
+            dyadRequestId,
+          },
+        ),
+      ).resolves.toBe(false);
+
+      expect(commitAllChanges).not.toHaveBeenCalled();
+      expect(getMessagesByChannel("chat:response:end")).toEqual([]);
+      expect(
+        dbOperations.updates.some(
+          (update) =>
+            typeof update.data.content === "string" &&
+            update.data.content.includes("Response cancelled by user"),
+        ),
+      ).toBe(true);
+    });
+
     it("appends shared-module Supabase deploy warnings as dyad-output", async () => {
       const { event } = createFakeEvent();
       mockSettings = buildTestSettings({ enableDyadPro: true });

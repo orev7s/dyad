@@ -506,7 +506,10 @@ describe("deployAllFunctionsIfNeeded", () => {
           abortSignal: controller.signal,
         });
         if (outcome === "cancels") {
-          expect(result.success).toBe(false);
+          expect(result).toMatchObject({
+            success: false,
+            cancelled: true,
+          });
           expect(mocks.deleteSupabaseFunction).not.toHaveBeenCalled();
         } else {
           expect(result.success).toBe(true);
@@ -523,6 +526,30 @@ describe("deployAllFunctionsIfNeeded", () => {
       }
     },
   );
+
+  it("reports cancellation when stop aborts the shared deploy helper", async () => {
+    const controller = new AbortController();
+    mocks.deployAffectedSupabaseFunctions.mockImplementationOnce(async () => {
+      controller.abort(new Error("Stopped"));
+      controller.signal.throwIfAborted();
+    });
+
+    const result = await deployAllFunctionsIfNeeded({
+      appId: 1,
+      appPath: "/apps/test",
+      supabaseProjectId: "project-id",
+      supabaseOrganizationSlug: null,
+      isSharedModulesChanged: true,
+      sharedServerModulePaths: [],
+      pendingFunctionDeploys: ["alpha"],
+      pendingFunctionDeletes: [],
+      onXmlStream: vi.fn(),
+      onXmlComplete: vi.fn(),
+      abortSignal: controller.signal,
+    });
+
+    expect(result).toEqual({ success: false, cancelled: true });
+  });
 
   it("treats an already-missing deferred function as deleted", async () => {
     mocks.deleteSupabaseFunction.mockRejectedValueOnce({

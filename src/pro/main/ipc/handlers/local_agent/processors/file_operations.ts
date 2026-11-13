@@ -42,6 +42,7 @@ export interface FileOperationResult {
   success: boolean;
   error?: string;
   warning?: string;
+  cancelled?: boolean;
 }
 
 export { supabaseFunctionEntryExists } from "../../../../../../supabase_admin/supabase_utils";
@@ -271,6 +272,7 @@ export async function deployAllFunctionsIfNeeded(
 
           return { success: true };
         } catch (error) {
+          ctx.abortSignal?.throwIfAborted();
           return {
             success: false,
             error: `Failed to redeploy Supabase functions: ${error}`,
@@ -281,6 +283,9 @@ export async function deployAllFunctionsIfNeeded(
   } catch (error) {
     if (isSupabaseFunctionSyncDeferred(error)) {
       return { success: true, warning: error.message };
+    }
+    if (ctx.abortSignal?.aborted) {
+      return { success: false, cancelled: true };
     }
     return {
       success: false,

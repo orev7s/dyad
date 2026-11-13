@@ -3441,6 +3441,19 @@ This conversation includes one or more image attachments. When the user uploads 
             }, // Use placeholder ID
           );
 
+          if (status.cancelled || abortController.signal.aborted) {
+            // Stop cancelled an in-flight deploy or file operation. The
+            // cancellation notice already went to the renderer from
+            // `cancelTrackedStreams`; persist it and do not publish a
+            // successful terminal response for work that was stopped.
+            await db
+              .update(messages)
+              .set({ content: appendCancelledResponseNotice(fullResponse) })
+              .where(eq(messages.id, placeholderAssistantMessage.id));
+            scheduleChatSearchIndexing();
+            return req.chatId;
+          }
+
           const chat = await db.query.chats.findFirst({
             where: eq(chats.id, req.chatId),
             with: {

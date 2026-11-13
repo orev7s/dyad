@@ -160,11 +160,15 @@ export async function processFullResponseActions(
 ): Promise<{
   updatedFiles?: boolean;
   error?: string;
+  cancelled?: boolean;
   extraFiles?: string[];
   extraFilesError?: string;
   warningMessages?: string[];
 }> {
   logger.log("processFullResponseActions for chatId", chatId);
+  if (signal?.aborted) {
+    return { cancelled: true };
+  }
   // Get the app associated with the chat
   const chatWithApp = await db.query.chats.findFirst({
     where: eq(chats.id, chatId),
@@ -237,6 +241,10 @@ export async function processFullResponseActions(
     output: Output,
     severity: "error" | "warning" = "error",
   ) => {
+    // A stopped turn aborts the deploy request. Report that as cancellation
+    // instead of recording a deploy failure and continuing with the remaining
+    // file writes and commit.
+    signal?.throwIfAborted();
     if (!isSupabaseFunctionSyncDeferred(output.error)) {
       (severity === "error" ? errors : warnings).push(output);
       return;
@@ -736,6 +744,10 @@ export async function processFullResponseActions(
       }
     }
 
+    // Stop may land after the last deploy/delete settled. Do not commit a
+    // half-applied response or mark it approved.
+    signal?.throwIfAborted();
+
     // If we have any file changes, commit them all at once
     hasChanges =
       writtenFiles.length > 0 ||
@@ -859,6 +871,16 @@ export async function processFullResponseActions(
         warningMessages.length > 0 ? [...new Set(warningMessages)] : undefined,
     };
   } catch (error: unknown) {
+    if (signal?.aborted) {
+      logger.log("Response action processing stopped by the user");
+      return {
+        cancelled: true,
+        warningMessages:
+          warningMessages.length > 0
+            ? [...new Set(warningMessages)]
+            : undefined,
+      };
+    }
     logger.error("Error processing files:", error);
     return {
       error: (error as any).toString(),

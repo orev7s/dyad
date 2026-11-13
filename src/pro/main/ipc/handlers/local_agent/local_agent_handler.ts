@@ -2375,6 +2375,16 @@ export async function handleLocalAgentStream(
           ctx.onXmlComplete(finalXml);
         },
       });
+      if (deployResult.cancelled || abortController.signal.aborted) {
+        // Stop landed during the post-turn deploy. Throw into the cancellation
+        // path so the turn is persisted as cancelled and never commits or
+        // publishes a successful terminal response.
+        abortController.signal.throwIfAborted();
+        throw new DyadError(
+          "Supabase function deployment was cancelled.",
+          DyadErrorKind.UserCancelled,
+        );
+      }
       if (deployResult.warning) {
         const warningXml = `<dyad-output type="warning" message="${escapeXmlAttr("Supabase function deploy warning")}">${escapeXmlContent(deployResult.warning)}</dyad-output>`;
         postTurnXmlParts.push(warningXml);

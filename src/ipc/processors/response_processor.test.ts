@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   executeSupabaseSqlMock: vi.fn(),
   writeMigrationFileMock: vi.fn(),
   deployAffectedSupabaseFunctionsMock: vi.fn(),
+  deploySupabaseFunctionMock: vi.fn(),
 }));
 
 const {
@@ -22,6 +23,7 @@ const {
   executeSupabaseSqlMock,
   writeMigrationFileMock,
   deployAffectedSupabaseFunctionsMock,
+  deploySupabaseFunctionMock,
 } = mocks;
 
 const dbUpdates: Array<Record<string, unknown>> = [];
@@ -88,7 +90,7 @@ vi.mock("../utils/cloud_sandbox_provider", () => ({
 vi.mock("../../supabase_admin/supabase_management_client", () => ({
   executeSupabaseSql: mocks.executeSupabaseSqlMock,
   deleteSupabaseFunction: vi.fn(),
-  deploySupabaseFunction: vi.fn(),
+  deploySupabaseFunction: mocks.deploySupabaseFunctionMock,
 }));
 
 vi.mock("../../supabase_admin/supabase_utils", async () => {
@@ -490,5 +492,100 @@ describe("processFullResponseActions add dependency errors", () => {
         supabaseOrganizationSlug: "org",
       }),
     );
+  });
+
+  it("returns cancelled without writing or deploying when stop already landed", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("Stopped"));
+
+    const result = await processFullResponseActions(
+      '<dyad-write path="supabase/functions/alpha/index.ts">Deno.serve(() => new Response("ok"));</dyad-write>',
+      1,
+      {
+        chatSummary: undefined,
+        messageId: 1,
+        signal: controller.signal,
+      },
+    );
+
+    expect(result).toEqual({ cancelled: true });
+    expect(deploySupabaseFunctionMock).not.toHaveBeenCalled();
+    expect(gitCommit).not.toHaveBeenCalled();
+  });
+
+  it("propagates stop from a per-file Supabase deploy instead of reporting a failure", async () => {
+    const controller = new AbortController();
+    deploySupabaseFunctionMock.mockImplementationOnce(async () => {
+      controller.abort(new Error("Stopped"));
+      controller.signal.throwIfAborted();
+    });
+    vi.mocked(db.query.chats.findFirst).mockResolvedValue({
+      id: 1,
+      appId: 1,
+      app: {
+        id: 1,
+        path: "test-app",
+        supabaseProjectId: "supabase-project",
+        supabaseOrganizationSlug: null,
+      },
+    } as any);
+
+    const result = await processFullResponseActions(
+      '<dyad-write path="supabase/functions/alpha/index.ts">Deno.serve(() => new Response("ok"));</dyad-write>',
+      1,
+      {
+        chatSummary: undefined,
+        messageId: 1,
+        signal: controller.signal,
+      },
+    );
+
+    expect(result).toMatchObject({ cancelled: true });
+    expect(gitCommit).not.toHaveBeenCalled();
+    expect(
+      dbUpdates.some(
+        (update) =>
+          typeof update.content === "string" &&
+          update.content.includes("Failed to deploy Supabase function"),
+      ),
+    ).toBe(false);
+  });
+
+  it("returns cancelled and skips the commit when stop aborts the shared deploy", async () => {
+    const controller = new AbortController();
+    deployAffectedSupabaseFunctionsMock.mockImplementationOnce(async () => {
+      controller.abort(new Error("Stopped"));
+      controller.signal.throwIfAborted();
+    });
+    vi.mocked(db.query.chats.findFirst).mockResolvedValue({
+      id: 1,
+      appId: 1,
+      app: {
+        id: 1,
+        path: "test-app",
+        supabaseProjectId: "supabase-project",
+        supabaseOrganizationSlug: null,
+      },
+    } as any);
+
+    const result = await processFullResponseActions(
+      '<dyad-write path="supabase/functions/_shared/foo.ts">export const foo = 1;</dyad-write>',
+      1,
+      {
+        chatSummary: undefined,
+        messageId: 1,
+        signal: controller.signal,
+      },
+    );
+
+    expect(result).toMatchObject({ cancelled: true });
+    expect(gitCommit).not.toHaveBeenCalled();
+    expect(
+      dbUpdates.some(
+        (update) =>
+          typeof update.content === "string" &&
+          update.content.includes("Failed to deploy Supabase function"),
+      ),
+    ).toBe(false);
   });
 });
