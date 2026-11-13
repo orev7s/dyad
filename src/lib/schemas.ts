@@ -438,6 +438,7 @@ export const LanguageSchema = z.enum([
   "ko",
   "es",
   "fr",
+  "it",
   "de",
   "pt-BR",
   "tr",
